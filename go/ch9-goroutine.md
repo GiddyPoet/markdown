@@ -169,9 +169,98 @@ goroutine和os线程之间的区别：
 
 
 ##### 9.8.2 Goroutine调度
-os线程特定：
+os线程特点：
 * os线程被操作系统内核调度，每隔几毫秒，一个硬件计时器会中断处理器，通过scheduler的内核函数，挂起当前执行的线程，并保存内存中它的寄存器内容，检查线程列表并决定下一个线程执行的顺序。
 * 上述操作涉及到操作系统的上下文切换，保存一个用户线程的状态到内存，恢复另一个线程到寄存器，然后更新调度器的数据结构，上述操作会消耗大量的内存访问时间。
 
 goroutine特点：
-* 
+* 使用自己的调度器，m:n调度（该方式涉及到cpu调度，[可参考](https://mp.weixin.qq.com/s/HFscrp3jsu_Cz52cGqm73A "进程和线程基础知识")，实质上是在n个操作系统线程上多工调度m个goroutine。
+* 本质上go的调度器和内核调度器相似，但是其只关注go程序中的goroutine(同时按照程序独立实现调度)
+*  go调度器不是通过硬件定时器实现的，而是采用go语言本身进行调度的。一个goroutine阻塞后会，调度器会使其休眠，执行其他goroutine
+
+##### 9.8.3 GOMAXPROCS
+
+**该GOMAXPROCS变量是用来决定会有多少个啊哦做系统的线程同时执行Go代码，默认值是CPU的核心数，GOMAXPROCS对应着m:n调度中的n**
+
+##### 9.8.4 Goroutine没有ID号
+
+此章涉及了一个线程本地存储的概念，介绍如下：
+**线程本地存储又叫线程局部存储，其英文为Thread Local Storage，简称TLS，其本质即为线程私有的全局变量。**
+
+通过c代码来说明，全局共享的变量：
+```c
+#include <stdio.h>
+#include <pthread.h>
+
+int g = 0;  // 1，定义全局变量g并赋初值0
+
+void* start(void* arg)
+{
+　　printf("start, g[%p] : %d\n", &g, g); // 4，子线程中打印全局变量g的地址和值
+
+　　g++; // 5，修改全局变量
+
+　　return NULL;
+}
+
+int main(int argc, char* argv[])
+{
+　　pthread_t tid;
+
+　　g = 100;  // 2，主线程给全局变量g赋值为100
+
+　　pthread_create(&tid, NULL, start, NULL); // 3， 创建子线程执行start()函数
+　　pthread_join(tid, NULL); // 6，等待子线程运行结束
+
+　　printf("main, g[%p] : %d\n", &g, g); // 7，打印全局变量g的地址和值
+
+　　return 0;
+}
+```
+运行结果如下：其中g为已全局变量被每个线程共享
+```c
+start, g[0x601064] : 100
+main, g[0x601064] : 101
+```
+
+线程私有变量，在定义变量是添加__thread关键字，这样就变成了线程私有全局变量：
+```c
+#include <stdio.h>
+#include <pthread.h>
+
+__thread int g = 0;  // 1，这里增加了__thread关键字，把g定义成私有的全局变量，每个线程都有一个g变量
+
+void* start(void* arg)
+{
+　　printf("start, g[%p] : %d\n", &g, g); // 4，打印本线程私有全局变量g的地址和值
+
+　　g++; // 5，修改本线程私有全局变量g的值
+
+　　return NULL;
+}
+
+int main(int argc, char* argv[])
+{
+　　pthread_t tid;
+
+　　g = 100;  // 2，主线程给私有全局变量赋值为100
+
+　　pthread_create(&tid, NULL, start, NULL); // 3，创建子线程执行start()函数
+　　pthread_join(tid, NULL);  // 6，等待子线程运行结束
+
+　　printf("main, g[%p] : %d\n", &g, g); // 7，打印主线程的私有全局变量g的地址和值
+
+　　return 0;
+}
+```
+
+运行结果如下：
+```c
+start, g[0x7f0181b046fc] : 0
+main, g[0x7f01823076fc] : 100
+```
+
+**c语言通过上述方式实现线程本地存储，实现原理为：gcc编译器（其实还有线程库以及内核的支持）使用了CPU的fs段寄存器来实现线程本地存储，不同的线程中fs段基地址是不一样的，这样看似同一个全局变量但在不同线程中却拥有不同的内存地址，实现了线程私有的全局变量。详细可参照[线程本地存储](https://www.cnblogs.com/abozhang/p/10800332.html "线程本地存储")**
+
+
+由于goroutine没有id，也无法使用线程本地存储，避免线程本地存储的行为。
